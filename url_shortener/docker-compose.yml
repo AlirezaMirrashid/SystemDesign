@@ -1,0 +1,62 @@
+services:
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+
+  write_service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - SERVICE=write
+      - REDIS_HOST=redis
+      - DB_PATH=/data/urls.db
+    ports:
+      - "5001:5001"
+    depends_on:
+      - redis
+    volumes:
+      - backend_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      
+  read_service:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - SERVICE=read
+      - REDIS_HOST=redis
+      - DB_PATH=/data/urls.db
+    ports:
+      - "5002:5002"
+    depends_on:
+      - redis
+    volumes:
+      - backend_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      # - REACT_APP_BACKEND_URL=http://write_service:5001
+      - REACT_APP_BACKEND_URL=http://localhost:5001
+      - NODE_OPTIONS=--openssl-legacy-provider
+    depends_on:
+      - write_service
+      - read_service
+
+volumes:
+  backend_data:

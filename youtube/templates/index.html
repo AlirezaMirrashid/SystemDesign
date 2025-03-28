@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>YouTube</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    .tabs {
+      margin-bottom: 1em;
+    }
+    .tab-button {
+      background: #eee;
+      border: 1px solid #ccc;
+      padding: 8px 12px;
+      cursor: pointer;
+      margin-right: 5px;
+    }
+    .tab-button.active {
+      background: #ccc;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    .progress-bar-bg {
+      width: 300px;
+      height: 20px;
+      background-color: #f3f3f3;
+      border: 1px solid #ccc;
+      margin-top: 8px;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      background-color: #4caf50;
+      width: 0%;
+    }
+    .bitrate-select, .video-select {
+      margin-left: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>YouTube</h1>
+  <div class="tabs">
+    <button class="tab-button active" onclick="showTab('upload')">Upload</button>
+    <button class="tab-button" onclick="showTab('player')">Player</button>
+  </div>
+
+  <!-- UPLOAD TAB -->
+  <div id="upload" class="tab-content active">
+    <h2>Upload a Video</h2>
+    <div>
+      <label>Title: <input type="text" id="title"/></label><br><br>
+      <label>Description: <input type="text" id="description"/></label><br><br>
+      <input type="file" id="fileInput"/><br><br>
+      <button onclick="startUpload()">Start Upload</button>
+    </div>
+    <div style="margin-top:20px;">
+      <div class="progress-bar-bg">
+        <div id="uploadProgress" class="progress-bar-fill"></div>
+      </div>
+      <p id="uploadStatus"></p>
+    </div>
+  </div>
+
+  <!-- PLAYER TAB -->
+  <div id="player" class="tab-content">
+    <h2>Video Player</h2>
+    <div>
+      <button onclick="loadVideoList()">Load Video List</button>
+      <select id="videoSelect" class="video-select" onchange="selectVideo()">
+        <option value="">--Select Video--</option>
+      </select>
+    </div>
+    <div style="margin-top:10px;">
+      <label>Bitrate:
+        <select id="bitrateSelect" class="bitrate-select" onchange="changeBitrate()">
+        </select>
+      </label>
+    </div>
+    <div style="margin-top: 10px;">
+      <!-- HLS will be played via the m3u8 manifest -->
+      <video id="videoPlayer" width="480" controls></video><br/>
+      <button onclick="playVideo()">Play</button>
+      <button onclick="pauseVideo()">Pause</button>
+      <button onclick="stopVideo()">Stop</button>
+    </div>
+  </div>
+  
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script>
+    function showTab(tabId) {
+      document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(div => div.classList.remove('active'));
+      event.target.classList.add('active');
+      document.getElementById(tabId).classList.add('active');
+    }
+
+    let currentVideoId = null;
+
+    async function startUpload() {
+      const file = document.getElementById('fileInput').files[0];
+      if (!file) {
+        alert('Please select a file.');
+        return;
+      }
+      const title = document.getElementById('title').value;
+      const description = document.getElementById('description').value;
+
+      const initResp = await fetch('/initiate-upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, description })
+      });
+      const initData = await initResp.json();
+      if (!initResp.ok) {
+        alert('Failed to initiate upload.');
+        return;
+      }
+      currentVideoId = initData.video_id;
+
+      document.getElementById('uploadStatus').textContent = "Upload initiated. Registering chunks...";
+      const chunkSize = 2 * 1024 * 1024; // 2MB chunks
+      let chunks = [];
+      for (let i = 0, j = 0; i < file.size; i += chunkSize, j++) {
+        chunks.push({
+          chunkid: i,
+          fingerprint: j,
+          size: Math.min(chunkSize, file.size - i)
+        });
+      }
+      await fetch(`/register-chunks/${currentVideoId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chunks })
+      });
+      document.getElementById('uploadStatus').textContent = "Chunks registered. Uploading...";
+      
+      let start = 0;
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkData = chunks[i];
+        const chunk = file.slice(start, start + chunkData.size);
+        const formData = new FormData();
+        formData.append('file', chunk);
+        formData.append('chunkid', chunkData.chunkid);
+        formData.append('fingerprint', chunkData.fingerprint);
+        formData.append('size', chunkData.size);
+
+        const chunkResp = await fetch(`/upload-chunk/${currentVideoId}`, {
+          method: 'POST',
+          body: formData
+        });
+        if (!chunkResp.ok) {
+          document.getElementById('uploadStatus').textContent = "Error uploading chunk.";
+          return;
+        }
+        const progress = Math.floor(((i + 1) / chunks.length) * 100);
+        document.getElementById('uploadProgress').style.width = progress + '%';
+        document.getElementById('uploadStatus').textContent = `Uploaded chunk ${i + 1}/${chunks.length}`;
+        start += chunkData.size;
+      }
+      document.getElementById('uploadStatus').textContent = "Finalizing upload...";
+      await fetch(`/complete-upload/${currentVideoId}`, { method: 'POST' });
+      document.getElementById('uploadStatus').textContent = "Transcoding video...";
+      await fetch(`/transcode/${currentVideoId}`, { method: 'POST' });
+      document.getElementById('uploadStatus').textContent = `Upload complete! Video ID: ${currentVideoId}`;
+      document.getElementById('uploadProgress').style.width = '100%';
+    }
+
+    async function loadVideoList() {
+      const resp = await fetch('/videos');
+      const data = await resp.json();
+      const videoSelect = document.getElementById('videoSelect');
+      videoSelect.innerHTML = '<option value="">--Select Video--</option>';
+      data.videos.forEach(video => {
+        const option = document.createElement('option');
+        option.value = video.id;
+        option.text = `${video.title} (${video.id})`;
+        videoSelect.appendChild(option);
+      });
+    }
+
+    async function selectVideo() {
+      currentVideoId = document.getElementById('videoSelect').value;
+      if (!currentVideoId) return;
+      // Load the master playlist for the selected video.
+      const masterUrl = `/stream/${currentVideoId}/master.m3u8`;
+      const video = document.getElementById('videoPlayer');
+
+      if (Hls.isSupported()) {
+        if (window.hls) {
+          window.hls.destroy();
+        }
+        const hls = new Hls();
+        window.hls = hls;
+        hls.loadSource(masterUrl);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, function () {
+          // Auto-play once manifest is parsed.
+          video.play();
+
+          // Populate bitrate select based on available levels.
+          const select = document.getElementById('bitrateSelect');
+          select.innerHTML = '';
+          hls.levels.forEach((level, index) => {
+            const option = document.createElement('option');
+            option.value = index;
+            option.text = `${Math.round(level.bitrate / 1000)} kbps`;
+            select.appendChild(option);
+          });
+          // Set default to the current level.
+          select.value = hls.currentLevel;
+        });
+        hls.on(Hls.Events.ERROR, function (event, data) {
+          console.error("HLS error:", data);
+        });
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = masterUrl;
+        video.addEventListener('loadedmetadata', function () {
+          video.play();
+        });
+      } else {
+        alert('Your browser does not support HLS playback.');
+      }
+    }
+
+    function changeBitrate() {
+      if (!window.hls) return;
+      const select = document.getElementById('bitrateSelect');
+      const desiredLevel = parseInt(select.value);
+      // Smoothly change the bitrate without destroying the instance.
+      window.hls.nextLevel = desiredLevel;
+    }
+
+    function playVideo() { document.getElementById('videoPlayer').play(); }
+    function pauseVideo() { document.getElementById('videoPlayer').pause(); }
+    function stopVideo() {
+      const video = document.getElementById('videoPlayer');
+      video.pause();
+      video.currentTime = 0;
+    }
+  </script>
+</body>
+</html>
