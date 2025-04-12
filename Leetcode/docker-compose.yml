@@ -1,0 +1,111 @@
+
+services:
+  mongo:
+    image: mongo:latest
+    container_name: mongodb
+    restart: on-failure
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      # test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:latest
+    container_name: redis
+    restart: on-failure
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: backend
+    restart: on-failure
+    env_file: ./backend/.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      code-executor:
+        condition: service_started
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:5000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  code-executor:
+    build: ./code-executor
+    container_name: code-executor
+    restart: on-failure
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./code-executor/app:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp:/tmp
+      - /dev/shm:/dev/shm
+    privileged: true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:5001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.worker
+    container_name: worker
+    restart: on-failure
+    env_file: ./backend/.env
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      code-executor:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    restart: always
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    # healthcheck:
+    #   test: ["CMD-SHELL", "curl --fail http://localhost:3000 || exit 1"]
+    #   interval: 20s
+    #   timeout: 5s
+    #   start_period: 30s
+    #   retries: 3
+
+volumes:
+  mongo_data:
