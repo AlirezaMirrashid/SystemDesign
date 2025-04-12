@@ -63,6 +63,9 @@ The application consists of several key components:
 
 4. Access the application at `http://localhost:3000`
 
+5. You must register and log in before you can run code.
+
+
 ## 💻 Usage
 
 ### Solving Problems
